@@ -1,0 +1,8 @@
+services:
+  app-tools:
+    image: node:22-alpine
+    container_name: activofijo-app-tools
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: ["sh", "-c", "corepack enable && pnpm install && pnpm typecheck"]
