@@ -1,18 +1,41 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, ActivityIndicator } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
-import { setAccessToken, setRefreshToken, getOrCreateDeviceId } from '../../src/lib/secure-store';
+import { getOrCreateDeviceId } from '../../src/lib/secure-store';
+import { authApi, guardarSesion } from '../../src/lib/auth-client';
+import { ErrorAutenticacion, esDesafio } from '../../src/lib/auth-api';
+import { VerificacionCodigo } from '../../src/components/auth/VerificacionCodigo';
+import { ConfiguracionInicial } from '../../src/components/auth/ConfiguracionInicial';
+import { estilosAuth as estilos } from '../../src/components/auth/estilos-auth';
 import { tokens } from '../../src/theme/tokens';
-import Constants from 'expo-constants';
+
+type PasoLogin =
+  | { tipo: 'credenciales' }
+  | { tipo: 'verificacion'; desafioToken: string }
+  | { tipo: 'configuracion'; desafioToken: string };
+
+const SUBTITULOS: Record<PasoLogin['tipo'], string> = {
+  credenciales: 'Aplicación Móvil de Campo',
+  verificacion: 'Verificación en dos pasos',
+  configuracion: 'Active la verificación en dos pasos',
+};
 
 export default function LoginScreen() {
-  const [email, setEmail] = useState('admin@uagrm.edu.bo');
-  const [password, setPassword] = useState('AdminPass2026!');
+  const [identificador, setIdentificador] = useState('');
+  const [password, setPassword] = useState('');
+  const [paso, setPaso] = useState<PasoLogin>({ tipo: 'credenciales' });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const router = useRouter();
-  const coreUrl = Constants.expoConfig?.extra?.coreApiUrl || 'http://localhost:3000';
+
+  const ingresar = () => router.replace('/(app)/inventario');
+
+  const volverACredenciales = () => {
+    setPassword('');
+    setError(null);
+    setPaso({ tipo: 'credenciales' });
+  };
 
   const handleLogin = async () => {
     setLoading(true);
@@ -20,70 +43,85 @@ export default function LoginScreen() {
 
     try {
       const deviceId = await getOrCreateDeviceId();
-      const res = await fetch(`${coreUrl}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, deviceId }),
-      });
+      const respuesta = await authApi.iniciarSesion(identificador.trim(), password, deviceId);
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.message || 'Error al autenticar');
+      if (!esDesafio(respuesta)) {
+        await guardarSesion(respuesta);
+        ingresar();
+        return;
       }
 
-      setAccessToken(data.accessToken);
-      await setRefreshToken(data.refreshToken);
-
-      router.replace('/(app)/inventario');
-    } catch (err: any) {
-      setError(err.message);
+      setPaso(
+        'requiere2fa' in respuesta
+          ? { tipo: 'verificacion', desafioToken: respuesta.desafioToken }
+          : { tipo: 'configuracion', desafioToken: respuesta.desafioToken },
+      );
+    } catch (err) {
+      setError(err instanceof ErrorAutenticacion ? err.message : 'Error al autenticar');
     } finally {
       setLoading(false);
     }
   };
 
+  const puedeEnviar = identificador.trim().length > 0 && password.length > 0 && !loading;
+
   return (
-    <View style={styles.container}>
-      <View style={styles.card}>
-        <Text style={styles.title}>UAGRM Activo Fijo</Text>
-        <Text style={styles.subtitle}>Aplicación Móvil de Campo</Text>
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <View style={styles.card}>
+          <Text style={styles.title}>UAGRM Activo Fijo</Text>
+          <Text style={styles.subtitle}>{SUBTITULOS[paso.tipo]}</Text>
 
-        {error && (
-          <View style={styles.errorBox}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        )}
-
-        <Text style={styles.label}>Correo Institucional</Text>
-        <TextInput
-          style={styles.input}
-          value={email}
-          onChangeText={setEmail}
-          autoCapitalize="none"
-          keyboardType="email-address"
-        />
-
-        <Text style={styles.label}>Contraseña</Text>
-        <TextInput
-          style={styles.input}
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry
-        />
-
-        <TouchableOpacity
-          style={[styles.button, loading && styles.buttonDisabled]}
-          onPress={handleLogin}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="#ffffff" />
-          ) : (
-            <Text style={styles.buttonText}>Iniciar Sesión</Text>
+          {paso.tipo === 'verificacion' && (
+            <VerificacionCodigo desafioToken={paso.desafioToken} onVerificado={ingresar} onVolver={volverACredenciales} />
           )}
-        </TouchableOpacity>
-      </View>
-    </View>
+
+          {paso.tipo === 'configuracion' && (
+            <ConfiguracionInicial desafioToken={paso.desafioToken} onCompletado={ingresar} onCancelar={volverACredenciales} />
+          )}
+
+          {paso.tipo === 'credenciales' && (
+            <>
+              {error && (
+                <View style={estilos.errorBox} accessibilityRole="alert">
+                  <Text style={estilos.errorText}>{error}</Text>
+                </View>
+              )}
+
+              <Text style={estilos.label}>Correo institucional o código de funcionario</Text>
+              <TextInput
+                style={estilos.input}
+                value={identificador}
+                onChangeText={setIdentificador}
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="email-address"
+                textContentType="username"
+                placeholder="funcionario@uagrm.edu.bo"
+              />
+
+              <Text style={estilos.label}>Contraseña</Text>
+              <TextInput
+                style={estilos.input}
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry
+                textContentType="password"
+                onSubmitEditing={handleLogin}
+              />
+
+              <TouchableOpacity
+                style={[estilos.boton, !puedeEnviar && estilos.botonDeshabilitado]}
+                onPress={handleLogin}
+                disabled={!puedeEnviar}
+              >
+                {loading ? <ActivityIndicator color="#ffffff" /> : <Text style={estilos.textoBoton}>Iniciar Sesión</Text>}
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -91,6 +129,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: tokens.colors.background,
+  },
+  scroll: {
+    flexGrow: 1,
     justifyContent: 'center',
     padding: tokens.spacing.lg,
   },
@@ -110,44 +151,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: tokens.colors.textMuted,
     marginBottom: tokens.spacing.lg,
-  },
-  errorBox: {
-    backgroundColor: tokens.colors.errorBg,
-    padding: tokens.spacing.sm,
-    borderRadius: tokens.borderRadius.sm,
-    marginBottom: tokens.spacing.md,
-  },
-  errorText: {
-    color: tokens.colors.error,
-    fontSize: 12,
-  },
-  label: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: tokens.colors.text,
-    marginBottom: tokens.spacing.xs,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: tokens.colors.border,
-    borderRadius: tokens.borderRadius.md,
-    padding: tokens.spacing.sm,
-    fontSize: 14,
-    marginBottom: tokens.spacing.md,
-  },
-  button: {
-    backgroundColor: tokens.colors.primary,
-    padding: tokens.spacing.md,
-    borderRadius: tokens.borderRadius.md,
-    alignItems: 'center',
-    marginTop: tokens.spacing.sm,
-  },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
-  buttonText: {
-    color: '#ffffff',
-    fontWeight: '600',
-    fontSize: 14,
   },
 });
